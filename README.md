@@ -1,3 +1,5 @@
+**English** · [中文](README.zh-CN.md)
+
 # mihari-pilot
 
 An agent skill that lets an agent **diagnose and operate the local [mihari](https://github.com/mihari-proxy/mihari)
@@ -43,7 +45,7 @@ skill sits one level down.
 With DSH's installer (from the [`find-skills`](https://github.com/) skill):
 
 ```powershell
-node <path-to>\dsh-install.mjs --repo <owner>/mihari-pilot --all
+node <path-to>\dsh-install.mjs --repo yxm1122/mihari-pilot --all
 # or simply copy:  skills\mihari-pilot  ->  %USERPROFILE%\.dsh\skills\
 ```
 

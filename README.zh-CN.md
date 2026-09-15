@@ -1,3 +1,5 @@
+[English](README.md) · **中文**
+
 # mihari-pilot
 
 一个 agent 技能：让 agent **自行诊断并操作本机的 [mihari](https://github.com/mihari-proxy/mihari) 代理**——零审批读状态、查清某个域名到底走哪条规则和哪个节点出口、在该开系统代理或 TUN 的时候自己开。
@@ -30,7 +32,7 @@
 DSH 的安装器（来自 `find-skills` 技能）：
 
 ```powershell
-node <path-to>\dsh-install.mjs --repo <owner>/mihari-pilot --all
+node <path-to>\dsh-install.mjs --repo yxm1122/mihari-pilot --all
 # 或者直接拷：  skills\mihari-pilot  ->  %USERPROFILE%\.dsh\skills\
 ```
 
