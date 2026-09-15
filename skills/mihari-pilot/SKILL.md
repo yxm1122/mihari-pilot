@@ -1,6 +1,6 @@
 ---
 name: mihari-pilot
-description: Check the local mihari proxy before "fixing the network": read its state, resolve the real exit chain for a domain, and turn the system proxy or TUN on/off. Use when a request times out, github/npm/pip/git cannot connect, DNS fails, a proxy is needed or suspected, or the user asks to 检查代理 / 开代理 / 关代理 / 走代理 / 翻墙 / 连不上.
+description: Check and drive the local mihari proxy before an agent tries to fix the network. Read its state, resolve the real exit chain for a domain, and turn the system proxy or TUN on or off. Use when a request times out, github/npm/pip/git cannot connect, DNS fails, a proxy is needed or suspected, or the user asks to 检查代理 / 开代理 / 关代理 / 走代理 / 翻墙 / 连不上.
 ---
 
 # mihari-pilot
