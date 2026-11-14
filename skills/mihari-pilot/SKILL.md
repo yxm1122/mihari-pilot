@@ -41,15 +41,14 @@ Do not skip steps. TUN takes over every packet at the IP layer; use it only when
 
 ```
 STATE=off|sysproxy|tun|conflict|unknown SYS=off|unknown|on[(foreign:<host:port>)] TUN=off|on|unknown
-CORE=running/<ver>|down|unknown DAEMON=running|stopped NODE=<group>><node> MODE=rule|global|direct
-MIXED=<port>:up|down TUI=present:<pid>|absent ENV=unset|set PROBE=skip|ok(<ms>ms)|fail(<reason>)
+CORE=running/<ver>|down|unknown DAEMON=running|stopped|unknown NODE=<group>><node> MODE=rule|global|direct
+MIXED=<port>:up|down TUI=present:<pid>|absent|unknown ENV=unset|set PROBE=skip|ok(<ms>ms)|fail(<reason>)
 ```
 
-Problems are separate `WARN=` lines. `--probe` adds one daemon-side delay test.
+Problems are separate `WARN=` lines. `--probe` adds one daemon-side delay test. In a confined sandbox `DAEMON`/`TUI`/`SYS`/`STATE` can be `unknown` (access denied) — that is not "off".
 
 **`doctor [--json]`** — capability matrix: Node, exe, config, token, pipe, daemon version/health/protocol/
-capabilities, ports and their source, controller, core, registry, service, egress, routing, TUI, log. Always
-exits 0; `NOTE=` lines explain anything degraded.
+capabilities, ports and their source, controller, core, registry, service, egress, routing, TUI, log; always exits 0, `NOTE=` explains what is degraded.
 
 **`trace <domain|URL> [--probe]`** — which rule matches and which node the domain leaves through:
 
@@ -60,9 +59,10 @@ EVIDENCE=ok <time>  DomainSuffix(youtube.com) using <group>[<node>]
 
 `RULE`/`CHAIN`/`NODE` are a **prediction** from the current selection; `EVIDENCE` is the last connection the log
 saw (`ok … using <group>[<node>]`, or `fail … dial <group> (match <rule>) error: <reason>`). Trust it only when
-recent — `WARN=evidence_stale` means it predates your change, so use `--probe` or `status --probe` for current
-health. `CONFIDENCE=approx` means an undecidable rule sits earlier; `none` means a bare IP — only `EVIDENCE` is
-meaningful. `EVIDENCE=none_…`: never forwarded, log level above `info`, or rotated out.
+recent AND its node matches the chain — `WARN=evidence_stale` / `evidence_predates_selection` mean it describes
+the past, so use `--probe` or `status --probe` for current health. `CONFIDENCE=approx` means an undecidable rule
+sits earlier; `none` means a bare IP — only `EVIDENCE` is meaningful. `EVIDENCE=none_…`: never forwarded, log
+level above `info`, or rotated out.
 
 **`env`** — prints `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY` for the live mixed port. The system proxy
 only covers WinINET apps, so **your own requests need these variables**.
@@ -113,14 +113,15 @@ System proxy and TUN **must not both be on**. `STATE=conflict` → stop and tell
 ## Exit codes and escalation
 `EXIT=0` ok · `1` ran but still offline · `2` environment problem · `3` needs the user (conflict, ambiguity, foreign proxy, TUN conflict, global-mode gate).
 
-`NEED_ESCALATION=1` means the sandbox blocked mihari's control pipe (write commands only). Retry the same command **once** with wider access; never retry a read-only command that way, and never loop.
+`NEED_ESCALATION=1` means the sandbox blocked mihari's control pipe (writes and `subs`). Retry the same command **once** with wider access; never retry other read-only commands that way, and never loop.
 
-Common `WARN=` lines: `mihari_not_found`, `daemon_stopped`, `core_down`, `mihari_config_unreadable`,
-`settings_missing_from_config:<keys>`, `mixed_port_drift:yaml=…,live=…`, `sysproxy_state_unknown`,
-`tun_state_unknown`, `sysproxy_and_tun_both_on`, `foreign_sysproxy:<host:port>`, `suspicious_node:<name>`,
-`rule_order_preceded_by_undecidable:<type>#<index>`, `trace_target_is_ip_ip_rules_not_evaluated`,
-`evidence_stale:<age>s`, `no_healthy_node:<group>`, `subscription_error:<name>:<reason>`, `daemon_unavailable`,
-`control_pipe_denied`, `control_token_missing`, `control_auth_failed`, `selection_not_effective`.
+Common `WARN=` lines: `mihari_not_found`, `daemon_stopped`, `daemon_state_unknown`, `tui_state_unknown`,
+`process_enumeration_denied`, `core_down`, `mihari_config_unreadable`, `settings_missing_from_config:<keys>`,
+`mixed_port_drift:yaml=…,live=…`, `sysproxy_state_unknown`, `tun_state_unknown`, `sysproxy_and_tun_both_on`,
+`foreign_sysproxy:<host:port>`, `suspicious_node:<name>`, `rule_order_preceded_by_undecidable:<type>#<index>`,
+`trace_target_is_ip_ip_rules_not_evaluated`, `evidence_stale:<age>s`, `evidence_predates_selection:<node>`,
+`no_healthy_node:<group>`, `subscription_error:<name>:<reason>`, `daemon_unavailable`, `control_pipe_denied`,
+`control_token_missing`, `control_auth_failed`, `selection_not_effective`.
 
 ## When you are done
 Restore what **you** turned on; leave what the user had on. Announce every change in one line:

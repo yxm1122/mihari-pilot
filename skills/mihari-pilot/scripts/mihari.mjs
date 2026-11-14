@@ -69,7 +69,7 @@ let lastLine = '';
 // wider access would buy nothing (SKILL.md says so), so only arm it for writes.
 let mayEscalate = false;
 
-const warn = (m) => warns.push(m);
+const warn = (m) => { if (!warns.includes(m)) warns.push(m); };
 const opId = () => crypto.randomBytes(16).toString('hex');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // In JSON mode text lines are suppressed but still remembered, so error exits
@@ -343,39 +343,76 @@ function tcpUp(host, port, timeoutMs) {
 
 // ------------------------------------------------------------ windows probes
 
+// Confined sandboxes (e.g. DSH read-only) deny piped child stdio: spawnSync
+// returns EPERM with no output even when the same tool works from a shell.
+// Capture through a temp file instead and fall back to pipes where allowed.
+function runCapture(exe, args, timeoutMs = 8000) {
+  const tmp = path.join(os.tmpdir(), `mihari-pilot-${process.pid}-${crypto.randomBytes(4).toString('hex')}.out`);
+  let fd = null;
+  try {
+    fd = fs.openSync(tmp, 'w+');
+    const r = spawnSync(exe, args, { stdio: ['ignore', fd, fd], timeout: timeoutMs, windowsHide: true });
+    fs.closeSync(fd);
+    fd = null;
+    let stdout = '';
+    try { stdout = fs.readFileSync(tmp, 'utf8'); } catch { /* empty */ }
+    return { status: r.status, error: r.error ? (r.error.code || 'error') : null, stdout };
+  } catch (e) {
+    if (fd !== null) { try { fs.closeSync(fd); } catch { /* ignore */ } }
+    try {
+      const r = spawnSync(exe, args, { encoding: 'utf8', windowsHide: true, timeout: timeoutMs });
+      return { status: r.status, error: r.error ? (r.error.code || 'error') : null, stdout: String(r.stdout || '') };
+    } catch (e2) {
+      return { status: null, error: e2.code || 'error', stdout: '' };
+    }
+  } finally {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+  }
+}
+
 // mihari runs two process roles from one binary: the OS service lives in
 // session 0, the TUI is an ordinary console process in the user's session.
-// tasklist is used instead of PowerShell so the script stays Node-only.
+// tasklist is used instead of PowerShell so the script stays Node-only; when
+// process enumeration is denied the caller must say "unknown", not "absent".
 function mihariProcesses() {
-  const r = spawnSync('tasklist.exe', ['/FI', 'IMAGENAME eq mihari.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true });
+  const r = runCapture('tasklist.exe', ['/FI', 'IMAGENAME eq mihari.exe', '/FO', 'CSV', '/NH']);
   const rows = [];
   for (const line of String(r.stdout || '').split(/\r?\n/)) {
     const m = line.match(/^"mihari\.exe","(\d+)","([^"]*)","(\d+)"/i);
     if (m) rows.push({ pid: Number(m[1]), session: Number(m[3]) });
   }
-  return { daemon: rows.filter((x) => x.session === 0), tui: rows.filter((x) => x.session !== 0) };
+  return {
+    daemon: rows.filter((x) => x.session === 0),
+    tui: rows.filter((x) => x.session !== 0),
+    unknown: r.status === null || r.status !== 0 || (!rows.length && !!r.error),
+  };
 }
 
 // The control API has no endpoint for service start/stop (by design: those
 // need elevation), so the service state comes from sc.exe. State tokens are
-// invariant English even on localized Windows.
+// invariant English even on localized Windows; a failed call is "unknown".
 function serviceState() {
-  const r = spawnSync('sc.exe', ['query', 'mihari'], { encoding: 'utf8', windowsHide: true });
+  const r = runCapture('sc.exe', ['query', 'mihari']);
   const out = String(r.stdout || '');
   if (/RUNNING/.test(out)) return 'running';
   if (/STOPPED|STOP_PENDING/.test(out)) return 'stopped';
-  if (/does not exist|1060/i.test(out) || r.status !== 0) return 'unknown';
+  if (/does not exist|1060/i.test(out)) return 'not_installed';
+  if (r.status === null || r.error) return 'unknown';
   return 'unknown';
 }
 
-// WinINET proxy state. reg.exe keeps this PowerShell-free; missing values are
+// WinINET proxy state. reg.exe keeps this PowerShell-free; a failed read is
 // "unreadable", not "off". mihari deliberately leaves ProxyServer behind on
 // disable, so a server string while disabled is normal and must not be
 // reported as a foreign proxy.
 function registryProxy() {
+  let blocked = false;
   const read = (name) => {
-    const r = spawnSync('reg.exe', ['query', IE_KEY, '/v', name], { encoding: 'utf8', windowsHide: true });
-    if (r.status !== 0) return null;
+    const r = runCapture('reg.exe', ['query', IE_KEY, '/v', name]);
+    if (r.status === null || r.error || r.status !== 0) {
+      if (r.status === null || r.error) blocked = true;
+      return null;
+    }
     const line = String(r.stdout || '').split(/\r?\n/).find((l) => l.includes(name));
     if (!line) return null;
     const m = line.match(/REG_\w+\s+(.*)$/);
@@ -384,7 +421,7 @@ function registryProxy() {
   const enableRaw = read('ProxyEnable');
   const server = read('ProxyServer') || '';
   const enabled = enableRaw ? (enableRaw.toLowerCase().startsWith('0x') ? parseInt(enableRaw, 16) : parseInt(enableRaw, 10)) === 1 : false;
-  return { enabled, server, readable: enableRaw !== null };
+  return { enabled, server, readable: enableRaw !== null, blocked };
 }
 
 // MIHARI_EXE override -> PATH -> the two official install locations. Only
@@ -392,7 +429,7 @@ function registryProxy() {
 // binary-independent.
 function resolveExe() {
   if (process.env.MIHARI_EXE && fs.existsSync(process.env.MIHARI_EXE)) return process.env.MIHARI_EXE;
-  const w = spawnSync('where.exe', ['mihari.exe'], { encoding: 'utf8', windowsHide: true });
+  const w = runCapture('where.exe', ['mihari.exe']);
   if (w.status === 0) {
     const first = String(w.stdout || '').split(/\r?\n/).find(Boolean);
     if (first) return first.trim();
@@ -606,8 +643,8 @@ async function collectState() {
     groups: [], chain: [], mode: 'unknown',
     mixed: { host: yamlMixed.split(':')[0], livePort: yamlPort, up: false },
     core: { up: false, version: '' },
-    reg: { enabled: false, server: '', readable: false },
-    tui: [], daemonProc: false,
+    reg: { enabled: false, server: '', readable: false, blocked: false },
+    tui: [], daemonState: 'unknown', procUnknown: false,
   };
   st.reg = registryProxy();
   const [statusR, sysR, tunR, groupsR] = await Promise.all([
@@ -680,7 +717,17 @@ async function collectState() {
   st.chain = primaryChain(st.groups);
   const procs = mihariProcesses();
   st.tui = procs.tui;
-  st.daemonProc = procs.daemon.length > 0;
+  st.procUnknown = procs.unknown;
+  // Three states, never a guess: tasklist can be denied by a sandbox, and the
+  // service may simply not be installed. Only claim "stopped" when known.
+  if (st.pipe === 'ok' || procs.daemon.length) {
+    st.daemonState = 'running';
+  } else {
+    const svc = serviceState();
+    if (svc === 'running') st.daemonState = 'running';
+    else if (svc === 'stopped' || svc === 'not_installed') st.daemonState = 'stopped';
+    else st.daemonState = procs.unknown ? 'unknown' : 'stopped';
+  }
   // The pipe reports ownership authoritatively; the registry alone cannot
   // distinguish mihari's proxy from another tool's. Only trust pipe ownership
   // when /v1/system-proxy actually answered (not a registry fallback).
@@ -698,7 +745,13 @@ function stateWarnings(st) {
   if (!resolveExe()) warn('mihari_not_found');
   if (st.sys.unknown) warn('sysproxy_state_unknown');
   if (st.tun.unknown) warn('tun_state_unknown');
-  if (!st.daemonProc && st.pipe !== 'ok' && serviceState() !== 'running') warn('daemon_stopped');
+  if (st.daemonState === 'stopped') warn('daemon_stopped');
+  if (st.daemonState === 'unknown') warn('daemon_state_unknown');
+  if (st.procUnknown) warn('tui_state_unknown');
+  if (st.daemonState === 'running' && st.pipe !== 'ok' && st.procUnknown) {
+    // sc said the service runs even though the process list was unreadable.
+    warn('process_enumeration_denied');
+  }
   if (st.pipe === 'ok') {
     if (!st.core.up) warn('core_down');
   } else if (!st.core.up) {
@@ -725,9 +778,8 @@ function stateLine(st, probeText) {
   let core = 'unknown';
   if (st.core.up) core = st.core.version ? `running/${st.core.version}` : 'running';
   else if (st.pipe === 'ok' || settings.values.secret) core = 'down';
-  let daemon = 'stopped';
-  if (st.daemonProc || st.pipe === 'ok') daemon = 'running';
-  const tui = st.tui.length ? `present:${st.tui[0].pid}` : 'absent';
+  const daemon = st.daemonState;
+  const tui = st.procUnknown ? 'unknown' : (st.tui.length ? `present:${st.tui[0].pid}` : 'absent');
   const envSet = process.env.HTTP_PROXY || process.env.HTTPS_PROXY || process.env.ALL_PROXY ? 'set' : 'unset';
   const chain = st.chain.length ? st.chain.join('>') : 'unknown';
   return `STATE=${state} SYS=${sys} TUN=${tunText} CORE=${core} DAEMON=${daemon} `
@@ -838,6 +890,14 @@ function evidenceAgeSeconds(line) {
   return age >= 0 ? age : null;
 }
 
+// Terminal node named by an "ok ... using <group>[<node>]" evidence line.
+// A mismatch with the current chain means the evidence predates a selection
+// change even when it is only seconds old (the 10-minute threshold misses it).
+function evidenceTerminalNode(line) {
+  const ok = line && line.match(/using (.+?)\[(.+)\](?:\\?"|$)/);
+  return ok ? ok[2] : '';
+}
+
 // ---------------------------------------------------------------- commands
 
 // Flags may appear anywhere; only --json is consumed globally, the rest are
@@ -852,7 +912,7 @@ function splitArgs(list) {
 const parsed = splitArgs(args);
 const command = (parsed.positional[0] || 'status').toLowerCase();
 const rest = parsed.positional.slice(1);
-mayEscalate = new Set(['on', 'off', 'select', 'use-sub', 'fix']).has(command);
+mayEscalate = new Set(['on', 'off', 'select', 'use-sub', 'fix', 'subs']).has(command);
 
 if (parsed.has('--help') || command === 'help') {
   say(USAGE);
@@ -924,7 +984,7 @@ async function cmdDoctor() {
     `DATA=${DATA_ROOT}`,
     `TOKEN=${readToken() ? 'ok' : 'missing'}`,
     `PIPE=${st.pipe}`,
-    `DAEMON=${st.daemonVersion || (st.daemonProc || svc === 'running' ? 'running/version_unknown' : 'stopped')}`,
+    `DAEMON=${st.daemonVersion || (st.daemonState === 'running' ? 'running/version_unknown' : st.daemonState)}`,
     `PROTOCOL=${st.protocol || 'unknown'}`,
     `HEALTH=${st.health || 'unknown'}`,
     `CAPS=${st.caps.length ? st.caps.join(',') : 'none'}`,
@@ -936,11 +996,13 @@ async function cmdDoctor() {
     `SERVICE=${svc}`,
     `EGRESS=${egress}`,
     `ROUTING=${routingR.ok && routingR.data && routingR.data.mode ? routingR.data.mode : st.mode}`,
-    `TUI=${st.tui.length ? 'present:' + st.tui[0].pid : 'absent'}`,
+    `TUI=${st.procUnknown ? 'unknown' : (st.tui.length ? 'present:' + st.tui[0].pid : 'absent')}`,
     `LOG=${fs.existsSync(MIHOMO_LOG) ? 'present' : 'missing'}`,
   ];
   const notes = [];
-  if (st.pipe !== 'ok') notes.push(`NOTE=PIPE ${st.pipe}: a wider sandbox only helps write commands; read-only fields stay degraded, and a missing token/handshake error is an environment problem`);
+  if (st.pipe !== 'ok') notes.push(`NOTE=PIPE ${st.pipe}: a wider sandbox helps commands whose data lives behind the pipe (writes and subs); read-only fields stay degraded, and a missing token/handshake error is an environment problem`);
+  if (st.procUnknown) notes.push('NOTE=process enumeration is denied, so DAEMON/TUI fall back to sc.exe and may be unknown - "unknown" is not "stopped"');
+  if (svc === 'unknown' || st.reg.blocked) notes.push('NOTE=sc/reg capture was blocked by the sandbox; SERVICE/REGISTRY above are unknown, not off');
   if (portSource !== 'config_file') notes.push('NOTE=PORTS came from a built-in fallback, not from mihari.yaml; treat them as guesses');
   if (!st.mixed.up && st.core.up) notes.push('NOTE=core is up but nothing accepts on the mixed port; read CORE= and the daemon log');
   jsonPayload = {
@@ -950,7 +1012,7 @@ async function cmdDoctor() {
     capabilities: st.caps, ports: { mixed: Number(st.mixed.livePort), controller: controllerAddr, source: portSource },
     controller: st.core.up, core: st.core.version || null, mixed_reachable: st.mixed.up,
     registry: { readable: st.reg.readable, proxy_enable: st.reg.enabled }, service: svc, egress, routing: st.mode,
-    tui: st.tui.length ? st.tui[0].pid : null, log: fs.existsSync(MIHOMO_LOG), notes, warns: warns.slice(),
+    tui: st.procUnknown ? 'unknown' : (st.tui.length ? st.tui[0].pid : null), log: fs.existsSync(MIHOMO_LOG), notes, warns: warns.slice(),
   };
   say(lines.join('\n'));
   for (const n of notes) say(n);
@@ -1004,6 +1066,10 @@ async function cmdTrace() {
   if (evidence && evidenceAge !== null && evidenceAge > EVIDENCE_STALE_SECONDS) {
     warn(`evidence_stale:${evidenceAge}s`);
   }
+  const evidenceNode = evidence ? evidenceTerminalNode(evidenceLine) : '';
+  if (evidenceNode && node && node !== 'unknown' && evidenceNode !== node) {
+    warn(`evidence_predates_selection:${evidenceNode}`);
+  }
   if (!evidence) warn('evidence_none:host_unseen_log_level_rotated_or_never_forwarded');
   jsonPayload = { trace: { target: hostName, rule: ruleText, chain: chain.join('>') || 'unknown', node, confidence }, probe: probeText || null, evidence: evidence || null, evidence_age_s: evidenceAge, warns: warns.slice() };
   finish(0);
@@ -1047,8 +1113,8 @@ async function ensureDaemon(st) {
   if (st.pipe !== 'not_found') { warn('control_unavailable'); return { ok: false, code: 2 }; }
   const exe = resolveExe();
   if (!exe) { warn('mihari_not_found'); return { ok: false, code: 2 }; }
-  const r = spawnSync(exe, ['service', 'start'], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
-  if (r.status !== 0) warn(`service_start_failed:${r.status}`);
+  const r = runCapture(exe, ['service', 'start'], 30000);
+  if (r.status !== 0) warn(`service_start_failed:${r.error || r.status}`);
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) {
     const s = await api('GET', '/v1/status', undefined, 3000);
@@ -1214,7 +1280,9 @@ async function cmdTui() {
   if (!exe) { warn('mihari_not_found'); jsonPayload = { tui: 'failed:no_binary' }; say('TUI=failed:no_binary'); finish(2); return; }
   const env = { ...process.env };
   delete env.NO_COLOR;
-  spawn('cmd.exe', ['/c', 'start', '""', `"${exe}"`], { env, windowsHide: true, windowsVerbatimArguments: true, stdio: 'ignore' }).unref();
+  const child = spawn('cmd.exe', ['/c', 'start', '""', `"${exe}"`], { env, windowsHide: true, windowsVerbatimArguments: true, stdio: 'ignore' });
+  child.on('error', () => { /* spawn failure surfaces as "no process" below */ });
+  child.unref();
   let pid = null;
   const deadline = Date.now() + 8000;
   while (Date.now() < deadline) {
@@ -1225,6 +1293,18 @@ async function cmdTui() {
   if (!pid) { warn('tui_no_process'); jsonPayload = { tui: 'failed:no_process' }; say('TUI=failed:no_process'); finish(2); return; }
   await sleep(700);
   if (tuiLogBrokenAfterStart()) { warn('tui_daemon_unavailable'); jsonPayload = { tui: `broken:${pid}` }; say(`TUI=broken:${pid}`); finish(2); return; }
+  // One more sample: a TUI that exits right after spawn must not be reported
+  // as present. If enumeration itself is blocked, say so instead of guessing.
+  const check = mihariProcesses();
+  if (check.unknown) {
+    warn('tui_unverified');
+  } else if (!check.tui.some((p) => p.pid === pid)) {
+    warn('tui_exited_after_start');
+    jsonPayload = { tui: `failed:exited` };
+    say('TUI=failed:exited');
+    finish(2);
+    return;
+  }
   jsonPayload = { tui: `present:${pid}` };
   say(`TUI=present:${pid}`);
   finish(0);
@@ -1295,8 +1375,8 @@ async function cmdNodes() {
 // one retry, because mihomo applies selections asynchronously.
 async function cmdSelect() {
   const st = await collectState();
-  const daemon = await ensureDaemon(st);
-  if (!daemon.ok) { finish(daemon.code); return; }
+  // Resolve the arguments against read-only data FIRST: a typo must report
+  // "unknown/ambiguous" without demanding wider access for the pipe.
   const groups = st.groups.length ? st.groups : (await collectState()).groups;
   const first = rest[0];
   if (!first) { warn('select_needs_a_group'); say(USAGE); finish(2); return; }
@@ -1376,10 +1456,20 @@ async function cmdSelect() {
     return;
   }
 
+  const daemon = await ensureDaemon(st);
+  if (!daemon.ok) { finish(daemon.code); return; }
+  let liveGroups = groups;
+  let liveGroup = group;
+  if (daemon.started) {
+    const fresh = await collectState();
+    if (fresh.groups.length) liveGroups = fresh.groups;
+    liveGroup = liveGroups.find((g) => g.name === group.name) || group;
+  }
+
   if (!node) {
-    const candidates = group.all.filter((n) => isRealNodeMember(groups, n));
+    const candidates = liveGroup.all.filter((n) => isRealNodeMember(liveGroups, n));
     if (!candidates.length) { warn('no_selectable_candidates:' + group.name); finish(3); return; }
-    const d = await groupDelay(group.name, '');
+    const d = await groupDelay(liveGroup.name, '');
     if (!d.ok) {
       warn('group_delay_failed:' + d.code);
       finish(TRANSPORT_CODES.has(d.code) ? 2 : 1);
@@ -1621,6 +1711,8 @@ async function cmdFix() {
     say('EVIDENCE=' + evidence);
     const age = evidenceAgeSeconds(evidenceLine);
     if (age !== null && age > EVIDENCE_STALE_SECONDS) warn(`evidence_stale:${age}s`);
+    const evNode = evidenceTerminalNode(evidenceLine);
+    if (evNode && evNode !== node) warn(`evidence_predates_selection:${evNode}`);
   }
 
   const groups = s.groups;

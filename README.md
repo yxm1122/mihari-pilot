@@ -14,17 +14,18 @@ the system proxy or TUN on and off when that is genuinely the right answer.
 
 Most "agent can fix the network" attempts fail in one of three ways. This skill is shaped around those:
 
-1. **Read-only work should never cost an approval.** `status`, `doctor`, `trace`, `env`, `nodes` and `subs` talk
-   to mihari's local control pipe and mihomo's loopback controller without changing anything. Only commands that
-   write (`on` / `off` / `select` / `use-sub` / `fix`) need wider access in a confined sandbox, and the script
-   says so with `NEED_ESCALATION=1` so the harness can retry exactly once.
+1. **Read-only work should not cost an approval — when it can avoid the pipe.** `status`, `doctor`, `trace`,
+   `env` and `nodes` read without the control pipe; `subs` lives behind it, so a confined sandbox may need one
+   wider retry for it. Commands that act through the pipe (`on` / `off` / `select` / `use-sub` / `fix` / `subs`)
+   emit `NEED_ESCALATION=1` so the harness can retry exactly once.
 2. **"Which node am I using" is not "which node will this domain use".** `trace <domain>` returns both: the
    **prediction** (matched rule + resolved group chain + terminal node) and the **observation** from mihomo's log
    (what the last real connection for that host actually did, including the exit node's own server and error when
    it failed).
 3. **A wrong answer is worse than no answer.** When the script cannot tell — an unreadable config, an
-   un-evaluable rule type, a bare-IP argument, a log level that suppresses evidence — it says so and exits
-   non-zero instead of printing something that looks authoritative.
+   un-evaluable rule type, a bare-IP argument, a log level that suppresses evidence, a sandbox that denies
+   process or pipe access — it says so and exits non-zero instead of printing something that looks
+   authoritative; unreadable state is `unknown`, never `off`.
 
 ## Commands
 
