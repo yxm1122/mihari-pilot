@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// mihari-pilot 2.0.0 - agent-facing control surface for the local mihari daemon.
+// mihari-pilot 2.1.0 - agent-facing control surface for the local mihari daemon.
 // Windows-only. Node >= 18, stdlib only.
 //
 //   node mihari.mjs status [--probe] [--json]
@@ -42,7 +42,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 const PIPE_PATH = '\\\\.\\pipe\\mihari-control';
 const DATA_ROOT = process.env.MIHARI_DATA || path.join(process.env.USERPROFILE || os.homedir(), '.mihari');
 const SETTINGS_FILE = path.join(DATA_ROOT, 'mihari.yaml');
@@ -92,6 +92,14 @@ function finish(code) {
   // Let stdout drain naturally; the watchdog only fires if a stray handle keeps us alive.
   process.exitCode = code;
   setTimeout(() => process.exit(code), 3000).unref();
+}
+
+// Local validation failures (bad group/node/subscription names, mode gates)
+// must not request wider sandbox access: no pipe action was attempted, and an
+// escalation prompt on a typo only invites a pointless approval.
+function finishLocal(code) {
+  escalation = false;
+  finish(code);
 }
 
 // --json is the only flag consumed before argument splitting; everything else
@@ -1379,7 +1387,7 @@ async function cmdSelect() {
   // "unknown/ambiguous" without demanding wider access for the pipe.
   const groups = st.groups.length ? st.groups : (await collectState()).groups;
   const first = rest[0];
-  if (!first) { warn('select_needs_a_group'); say(USAGE); finish(2); return; }
+  if (!first) { warn('select_needs_a_group'); say(USAGE); finishLocal(2); return; }
   let group;
   let node;
   const resolvedGroup = resolveGroup(groups, first);
@@ -1391,7 +1399,7 @@ async function cmdSelect() {
         for (const c of rn.candidates) say(`CANDIDATE=${c}`);
         warn('unknown_or_ambiguous_node:' + rest[1]);
         jsonPayload = { group: group.name, candidates: rn.candidates, warns: warns.slice() };
-        finish(rn.candidates.length ? 3 : 2);
+        finishLocal(rn.candidates.length ? 3 : 2);
         return;
       }
       node = rn.name;
@@ -1427,12 +1435,12 @@ async function cmdSelect() {
       }
       if (candidates.length) break;
     }
-    if (!chosen && !candidates.length) { warn('unknown_group_or_node:' + first); finish(2); return; }
+    if (!chosen && !candidates.length) { warn('unknown_group_or_node:' + first); finishLocal(2); return; }
     if (!chosen) {
       for (const h of candidates) say(`CANDIDATE=${h.group}:${h.node}`);
       warn('ambiguous_node_across_groups:' + first);
       jsonPayload = { candidates, warns: warns.slice() };
-      finish(3);
+      finishLocal(3);
       return;
     }
     group = chosen.group;
@@ -1441,18 +1449,18 @@ async function cmdSelect() {
     for (const c of resolvedGroup.candidates) say(`CANDIDATE=${c}`);
     warn('unknown_or_ambiguous_group:' + first);
     jsonPayload = { candidates: resolvedGroup.candidates, warns: warns.slice() };
-    finish(resolvedGroup.candidates.length ? 3 : 2);
+    finishLocal(resolvedGroup.candidates.length ? 3 : 2);
     return;
   }
 
   if (group.name === 'GLOBAL' && st.mode !== 'global') {
     warn('global_requires_global_mode:current=' + st.mode);
-    finish(3);
+    finishLocal(3);
     return;
   }
   if (group.type === 'URLTest') {
     warn('group_not_selectable:urltest:' + group.name);
-    finish(3);
+    finishLocal(3);
     return;
   }
 
@@ -1468,7 +1476,7 @@ async function cmdSelect() {
 
   if (!node) {
     const candidates = liveGroup.all.filter((n) => isRealNodeMember(liveGroups, n));
-    if (!candidates.length) { warn('no_selectable_candidates:' + group.name); finish(3); return; }
+    if (!candidates.length) { warn('no_selectable_candidates:' + group.name); finishLocal(3); return; }
     const d = await groupDelay(liveGroup.name, '');
     if (!d.ok) {
       warn('group_delay_failed:' + d.code);
