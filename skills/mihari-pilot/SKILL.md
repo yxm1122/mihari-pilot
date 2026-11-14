@@ -5,6 +5,10 @@ description: Check and drive the local mihari proxy before an agent tries to fix
 
 # mihari-pilot
 
+> **Third-party, opinionated subset — not mihari's manual.** This skill covers common agent workflows only; a
+> feature it does not mention may still exist in mihari. Before concluding "mihari cannot do X", check
+> `mihari --help` (no pipe needed) or upstream <https://github.com/mihari-proxy/mihari> (docs/commands.md, TUI, Web panel).
+
 Drives the local **mihari** daemon (service `mihari`, data root `~/.mihari` on Windows), which manages mihomo.
 mihari owns two **mutually exclusive** exits: the system proxy (WinINET, for desktop apps) and TUN (IP layer).
 

@@ -8,7 +8,9 @@ domain actually uses, switch nodes or subscriptions when asked, repair a broken 
 the system proxy or TUN on and off when that is genuinely the right answer.
 
 > **Unofficial.** This is a third-party companion skill. It is not affiliated with, endorsed by, or part of the
-> mihari project. mihari itself is GPL-3.0; this repository contains no mihari code — only a script that calls it.
+> mihari project. It covers common agent workflows only: a feature it does not mention may still exist in
+> mihari — check `mihari --help` or the upstream docs before concluding otherwise. mihari itself is GPL-3.0;
+> this repository contains no mihari code — only a script that calls it.
 
 ## What it actually does
 
