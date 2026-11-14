@@ -51,6 +51,12 @@ const LOG_DIR = path.join(DATA_ROOT, 'logs');
 const MIHOMO_LOG = path.join(LOG_DIR, 'mihomo.log');
 const TUI_LOG = path.join(LOG_DIR, 'mihari-tui.log');
 const IE_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
+// Beyond this age, logged evidence is history, not current health (the exit
+// may have been switched or died since). Reported as WARN=evidence_stale.
+const EVIDENCE_STALE_SECONDS = 600;
+// Private ranges stay direct: campus/LAN endpoints must not be pushed into the
+// proxy. Curl/git understand CIDR entries; other tools simply ignore them.
+const NO_PROXY_VALUE = 'localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,.local';
 
 const USAGE = 'usage: node mihari.mjs <status|doctor|trace <domain>|env|on|off|tui|nodes [group]|select <group> [node]|subs|use-sub <id|name>|fix [domain]> [--json] [--probe] [--tun]';
 
@@ -820,6 +826,18 @@ function parseEvidence(line) {
   return '';
 }
 
+// Age of a log line in seconds, or null when the timestamp is unparsable.
+// V8 may reject 7-digit fractional seconds on some platforms; trim to ms.
+function evidenceAgeSeconds(line) {
+  const m = line && line.match(/"time":"([^"]+)"/);
+  if (!m) return null;
+  let ts = Date.parse(m[1]);
+  if (Number.isNaN(ts)) ts = Date.parse(m[1].replace(/(\.\d{3})\d+/, '$1'));
+  if (Number.isNaN(ts)) return null;
+  const age = Math.round((Date.now() - ts) / 1000);
+  return age >= 0 ? age : null;
+}
+
 // ---------------------------------------------------------------- commands
 
 // Flags may appear anywhere; only --json is consumed globally, the rest are
@@ -979,10 +997,15 @@ async function cmdTrace() {
     probeText = p.ok ? `ok(${p.ms}ms)` : `fail(${p.code})`;
     say(`PROBE=${probeText}`);
   }
-  const evidence = parseEvidence(lastLogLine(hostName));
+  const evidenceLine = lastLogLine(hostName);
+  const evidence = parseEvidence(evidenceLine);
+  const evidenceAge = evidence ? evidenceAgeSeconds(evidenceLine) : null;
   say('EVIDENCE=' + (evidence || 'none_no_recent_connection_in_log'));
+  if (evidence && evidenceAge !== null && evidenceAge > EVIDENCE_STALE_SECONDS) {
+    warn(`evidence_stale:${evidenceAge}s`);
+  }
   if (!evidence) warn('evidence_none:host_unseen_log_level_rotated_or_never_forwarded');
-  jsonPayload = { trace: { target: hostName, rule: ruleText, chain: chain.join('>') || 'unknown', node, confidence }, probe: probeText || null, evidence: evidence || null, warns: warns.slice() };
+  jsonPayload = { trace: { target: hostName, rule: ruleText, chain: chain.join('>') || 'unknown', node, confidence }, probe: probeText || null, evidence: evidence || null, evidence_age_s: evidenceAge, warns: warns.slice() };
   finish(0);
 }
 
@@ -995,12 +1018,12 @@ async function cmdEnv() {
   const addr = `${host}:${st.mixed.livePort}`;
   jsonPayload = {
     http_proxy: `http://${addr}`, https_proxy: `http://${addr}`,
-    all_proxy: `socks5h://${addr}`, no_proxy: 'localhost,127.0.0.1,::1',
+    all_proxy: `socks5h://${addr}`, no_proxy: NO_PROXY_VALUE,
   };
   say(`HTTP_PROXY=http://${addr}`);
   say(`HTTPS_PROXY=http://${addr}`);
   say(`ALL_PROXY=socks5h://${addr}`);
-  say('NO_PROXY=localhost,127.0.0.1,::1');
+  say('NO_PROXY=' + NO_PROXY_VALUE);
   // A dead or guessed port would hand the agent a proxy that cannot work.
   // Only mixed-addr matters here: controller-addr is not used by these vars.
   const mixedMissing = !settings.readable || settings.missing.includes('mixed-addr');
@@ -1592,8 +1615,13 @@ async function cmdFix() {
   }
   steps.push('probe_failed');
   const evidenceHost = domain ? domain.toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').split('/')[0].split(':')[0] : '';
-  const evidence = evidenceHost ? parseEvidence(lastLogLine(evidenceHost)) : '';
-  if (evidence) say('EVIDENCE=' + evidence);
+  const evidenceLine = evidenceHost ? lastLogLine(evidenceHost) : '';
+  const evidence = parseEvidence(evidenceLine);
+  if (evidence) {
+    say('EVIDENCE=' + evidence);
+    const age = evidenceAgeSeconds(evidenceLine);
+    if (age !== null && age > EVIDENCE_STALE_SECONDS) warn(`evidence_stale:${age}s`);
+  }
 
   const groups = s.groups;
   const byName = groupMap(groups);

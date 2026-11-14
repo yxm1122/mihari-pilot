@@ -15,22 +15,19 @@ node "<skill-dir>\scripts\mihari.mjs" <command> [args] [--probe] [--json] [--tun
 ```
 
 `<skill-dir>` is the Base directory reported when this skill loads. Writes use mihari's control pipe
-(`\\.\pipe\mihari-control`, Bearer token from `control.token`); mihomo's TCP controller is only a fallback for
-rules/version/config. Run `doctor` first if anything looks off.
+(`\\.\pipe\mihari-control`, Bearer token from `control.token`); mihomo's controller is only a fallback. Run `doctor` first if anything looks off.
 
 ## Read this first: a working exit is not the system proxy
-As long as the mihari service runs, the mixed port is a usable HTTP/SOCKS proxy. `STATE=off` (system proxy and
-TUN both off) **does not mean no proxy** — they exist only for programs you cannot configure yourself. The
-smallest fix for "my request failed": `status` to confirm `CORE=running`, then wrap the command in the variables
-`env` prints. Reach for `on` only when a program you do not control must use the proxy.
+As long as the mihari service runs, the mixed port is a usable HTTP/SOCKS proxy. `STATE=off` (both exits off)
+**does not mean no proxy** — they exist only for programs you cannot configure yourself. Smallest fix for "my
+request failed": `status --probe`, then wrap the command in the `env` variables. `on` is only for other programs.
 
-**Never hardcode a port.** Ports are per machine; `status`, `doctor` and `env` print the live values (the running
-core wins over `mihari.yaml`).
+**Never hardcode a port.** Ports are per machine; `status`, `doctor` and `env` print the live values (the running core wins over `mihari.yaml`).
 
 ## Ladder: smallest step first
 | Step | When a request fails | Command |
 |---|---|---|
-| 1 | look first | `status` |
+| 1 | look first | `status --probe` |
 | 2 | use the proxy yourself | `env`, wrap your command |
 | 3 | the route or exit looks wrong | `trace <domain>` |
 | 4 | the path is broken | `fix [domain]` |
@@ -61,11 +58,11 @@ TRACE=youtube.com RULE=DomainSuffix(youtube.com)-><group> CHAIN=<group>><node> N
 EVIDENCE=ok <time>  DomainSuffix(youtube.com) using <group>[<node>]
 ```
 
-`RULE`/`CHAIN`/`NODE` are a **prediction**; `EVIDENCE` is what the log says **actually happened**
-(`ok … using <group>[<node>]`, or `fail … dial <group> (match <rule>) error: <reason>` naming the exit node's
-own server). When they disagree, trust `EVIDENCE`. `CONFIDENCE=approx` means an undecidable rule sits earlier;
-`none` means a bare IP — only `EVIDENCE` is meaningful. `EVIDENCE=none_…`: never forwarded, log level above
-`info` (System → Logging), or rotated out.
+`RULE`/`CHAIN`/`NODE` are a **prediction** from the current selection; `EVIDENCE` is the last connection the log
+saw (`ok … using <group>[<node>]`, or `fail … dial <group> (match <rule>) error: <reason>`). Trust it only when
+recent — `WARN=evidence_stale` means it predates your change, so use `--probe` or `status --probe` for current
+health. `CONFIDENCE=approx` means an undecidable rule sits earlier; `none` means a bare IP — only `EVIDENCE` is
+meaningful. `EVIDENCE=none_…`: never forwarded, log level above `info`, or rotated out.
 
 **`env`** — prints `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY` for the live mixed port. The system proxy
 only covers WinINET apps, so **your own requests need these variables**.
@@ -80,14 +77,16 @@ other one is on it is switched off first (`SWITCHED=tun->sysproxy` / `sysproxy->
 (`NODE=<name> CURRENT=yes|no [DELAY=…]`). Names accept unique substrings; ambiguity lists `CANDIDATE=` lines.
 
 **`select <group> [node]`** — switch nodes. With no `node`, measures the group and picks the fastest healthy
-member (REJECT, pseudo-nodes, DIRECT and nested groups are never auto-picked). `select <node>` searches the
-primary selector first, then other Selector groups. `select GLOBAL` needs `MODE=global`; URLTest groups are not
-selectable. Reports `SELECT=<group>:<node> PREV=<old> CHANGED=…`.
+member (REJECT, pseudo-nodes, DIRECT and nested groups are never auto-picked) and prints
+`AUTO_PICK=<node> DELAY=<ms>`. `select <node>` searches the primary selector first, then other Selector groups.
+`select GLOBAL` needs `MODE=global`; URLTest groups are not selectable. Reports
+`SELECT=<group>:<node> PREV=<old> CHANGED=…`.
 
 **`subs`** — subscriptions: id, name, active/enabled/cache/generation, expiry, traffic.
 
 **`use-sub <id|name|prefix>`** — switch the active subscription: auto-enables, refreshes when it has no cache,
 activates, verifies. It is global — only when the user asked; the script never picks a subscription itself.
+Unknown targets exit 2; ambiguous names exit 3 with `CANDIDATE=` lines.
 
 **`fix [domain]`** — daemon (one `mihari service start`) → core (one restart) → mixed port → delay test of the
 current exit. If the failing exit is a manually selected proxy node, it picks the fastest healthy sibling in the
@@ -95,7 +94,7 @@ same selector and re-tests; DIRECT, URLTest groups, pseudo-nodes, and a domain t
 healthy group are never auto-switched (reported instead).
 
 ```
-FIX=ok|fixed|failed STEPS=<steps> CHANGED=none|node:<group>:<old>-><new> [STEP=<failed-step> REASON=...]
+FIX=ok|fixed|failed STEPS=<steps> CHANGED=none|node:<group>:<old>-><new> [PATH=ok NODE=<node>] [STEP=<failed-step> REASON=...]
 ```
 `fix` never touches sysproxy, TUN, subscriptions, egress or routing mode.
 
@@ -117,11 +116,11 @@ System proxy and TUN **must not both be on**. `STATE=conflict` → stop and tell
 `NEED_ESCALATION=1` means the sandbox blocked mihari's control pipe (write commands only). Retry the same command **once** with wider access; never retry a read-only command that way, and never loop.
 
 Common `WARN=` lines: `mihari_not_found`, `daemon_stopped`, `core_down`, `mihari_config_unreadable`,
-`settings_missing_from_config:<keys>`, `mixed_port_drift:yaml=…,live=…`, `sysproxy_and_tun_both_on`,
-`foreign_sysproxy:<host:port>`, `suspicious_node:<name>`, `rule_order_preceded_by_undecidable:<type>#<index>`,
-`trace_target_is_ip_ip_rules_not_evaluated`, `no_healthy_node:<group>`, `subscription_error:<name>:<reason>`,
-`daemon_unavailable`, `control_pipe_denied`, `control_token_missing`, `control_auth_failed`,
-`selection_not_effective`.
+`settings_missing_from_config:<keys>`, `mixed_port_drift:yaml=…,live=…`, `sysproxy_state_unknown`,
+`tun_state_unknown`, `sysproxy_and_tun_both_on`, `foreign_sysproxy:<host:port>`, `suspicious_node:<name>`,
+`rule_order_preceded_by_undecidable:<type>#<index>`, `trace_target_is_ip_ip_rules_not_evaluated`,
+`evidence_stale:<age>s`, `no_healthy_node:<group>`, `subscription_error:<name>:<reason>`, `daemon_unavailable`,
+`control_pipe_denied`, `control_token_missing`, `control_auth_failed`, `selection_not_effective`.
 
 ## When you are done
 Restore what **you** turned on; leave what the user had on. Announce every change in one line:
