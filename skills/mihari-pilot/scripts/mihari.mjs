@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// mihari-pilot 2.1.0 - agent-facing control surface for the local mihari daemon.
+// mihari-pilot 2.1.1 - agent-facing control surface for the local mihari daemon.
 // Windows-only. Node >= 18, stdlib only.
 //
 //   node mihari.mjs status [--probe] [--json]
@@ -42,7 +42,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 
-const VERSION = '2.1.0';
+const VERSION = '2.1.1';
 const PIPE_PATH = '\\\\.\\pipe\\mihari-control';
 const DATA_ROOT = process.env.MIHARI_DATA || path.join(process.env.USERPROFILE || os.homedir(), '.mihari');
 const SETTINGS_FILE = path.join(DATA_ROOT, 'mihari.yaml');
@@ -1461,6 +1461,15 @@ async function cmdSelect() {
   if (group.type === 'URLTest') {
     warn('group_not_selectable:urltest:' + group.name);
     finishLocal(3);
+    return;
+  }
+
+  // A no-op selection needs no pipe write, so answer before asking for
+  // escalation: "already selected" is a fact from the read-only channel.
+  if (node && node === group.now) {
+    say(`SELECT=${group.name}:${node} PREV=${group.now} CHANGED=no`);
+    jsonPayload = { group: group.name, node, prev: group.now, changed: false, warns: warns.slice() };
+    finishLocal(0);
     return;
   }
 
